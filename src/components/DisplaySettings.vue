@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref } from 'vue'
+import type { SkyProjection } from '../lib/skyProjection'
 import { mdiTuneVariant } from '@mdi/js'
 
 const showConstellations = defineModel<boolean>('constellations', { required: true })
@@ -7,6 +8,7 @@ const showStars = defineModel<boolean>('stars', { required: true })
 const showGrid = defineModel<boolean>('grid', { required: true })
 const showLabels = defineModel<boolean>('labels', { required: true })
 const showConstellationLabels = defineModel<boolean>('constellationLabels', { required: true })
+const projection = defineModel<SkyProjection>('projection', { required: true })
 const open = ref(false)
 </script>
 
@@ -36,6 +38,13 @@ const open = ref(false)
     </template>
     <v-card class="display-settings-panel" width="280" max-width="calc(100vw - 24px)">
       <h2>Affichage</h2>
+      <label class="projection-control">
+        Projection
+        <select v-model="projection" aria-label="Projection">
+          <option value="plane">Carte plane</option>
+          <option value="globe">Vue sphérique</option>
+        </select>
+      </label>
       <div class="layer-row">
         <span>
           <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -125,6 +134,32 @@ const open = ref(false)
 </template>
 
 <style scoped>
+.projection-control {
+  display: grid;
+  gap: 8px;
+  margin: 14px 0;
+  color: #c4c9d2;
+  font-size: 11px;
+}
+
+.projection-control select {
+  width: 100%;
+  padding: 9px 12px;
+  color: #e9eaf0;
+  background: #172333;
+  border: 1px solid #7388a366;
+  border-radius: 6px;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  color-scheme: dark;
+}
+
+.projection-control select:focus-visible {
+  outline: 2px solid #c4ad85;
+  outline-offset: 2px;
+}
+
 .display-settings-button.v-btn {
   flex-shrink: 0;
   margin-left: auto;

@@ -1,10 +1,15 @@
+import { projectGlobe, unprojectGlobe } from './skyGlobe'
+
 /** Equatorial J2000 projection: north up; right ascension increases to the left. */
 export interface SkyPosition {
   ra: number
   dec: number
 }
 
+export type SkyProjection = 'plane' | 'globe'
+
 export interface SkyView extends SkyPosition {
+  projection?: SkyProjection
   width: number
   height: number
   zoom: number
@@ -20,13 +25,17 @@ export const MAX_ZOOM = 96
 const SCREEN_EDGE_EPSILON = 1e-7
 
 /** Keep the entire viewport between the two poles, including on portrait screens. */
-export function minimumSkyZoom(view: Pick<SkyView, 'width' | 'height'>): number {
+export function minimumSkyZoom(view: Pick<SkyView, 'width' | 'height' | 'projection'>): number {
+  if (view.projection === 'globe') return 1
   return Math.max(MIN_ZOOM, (2 * view.height) / Math.max(1, view.width))
 }
 
 export function constrainSkyView(view: SkyView): void {
   view.zoom = Math.max(minimumSkyZoom(view), Math.min(MAX_ZOOM, view.zoom))
-  const limit = Math.max(0, 90 - (180 * view.height) / (Math.max(1, view.width) * view.zoom))
+  const limit =
+    view.projection === 'globe'
+      ? 90
+      : Math.max(0, 90 - (180 * view.height) / (Math.max(1, view.width) * view.zoom))
   view.dec = Math.max(-limit, Math.min(limit, view.dec))
   view.ra = wrapRa(view.ra)
 }
@@ -66,6 +75,7 @@ export function projectChartPosition(position: SkyPosition, view: SkyView): Scre
 }
 
 export function projectPosition(position: SkyPosition, view: SkyView): ScreenPoint {
+  if (view.projection === 'globe') return projectGlobe(position, view)
   return projectChartPosition(position, view)
 }
 
@@ -78,6 +88,7 @@ export function unprojectChartPoint(point: ScreenPoint, view: SkyView): SkyPosit
 }
 
 export function unprojectPoint(point: ScreenPoint, view: SkyView): SkyPosition {
+  if (view.projection === 'globe') return unprojectGlobe(point, view) ?? { ra: NaN, dec: NaN }
   return unprojectChartPoint(point, view)
 }
 
@@ -119,6 +130,30 @@ export function fitSkyPositions(
   const horizontalZoom = raSpan > 0 ? (availableWidth * 24) / (width * raSpan) : MAX_ZOOM
   const verticalZoom = decSpan > 0 ? (availableHeight * 360) / (width * decSpan) : MAX_ZOOM
 
+  if (view.projection === 'globe') {
+    const center = { ra: wrapRa(arcStart + raSpan / 2), dec: (minDec + maxDec) / 2 }
+    const base = { ...view, ...center, zoom: 1 }
+    let extentX = 0,
+      extentY = 0
+    for (const position of positions) {
+      const point = projectGlobe(position, base)
+      if (point.depth <= 0) return { ...center, zoom: 1 }
+      extentX = Math.max(extentX, Math.abs(point.x - width / 2))
+      extentY = Math.max(extentY, Math.abs(point.y - height / 2))
+    }
+    return {
+      ...center,
+      zoom: Math.max(
+        1,
+        Math.min(
+          MAX_ZOOM,
+          availableWidth / Math.max(1, extentX * 2),
+          availableHeight / Math.max(1, extentY * 2),
+        ),
+      ),
+    }
+  }
+
   return {
     ra: wrapRa(arcStart + raSpan / 2),
     dec: (minDec + maxDec) / 2,
@@ -149,6 +184,18 @@ export function forEachProjectedPosition(
   visitor: (point: ScreenPoint) => void,
   padding = 0,
 ): void {
+  if (view.projection === 'globe') {
+    const point = projectGlobe(position, view)
+    if (
+      point.depth >= -1e-12 &&
+      point.x >= -padding &&
+      point.x <= view.width + padding &&
+      point.y >= -padding &&
+      point.y <= view.height + padding
+    )
+      visitor(point)
+    return
+  }
   forEachVisibleCopy(projectChartPosition(position, view), view, visitor, padding)
 }
 
@@ -172,7 +219,9 @@ function visibleAngularRanges(view: SkyView, padding: number): AngularRange[] {
 }
 
 function positionIsVisible(position: SkyPosition, view: SkyView, padding = 0): boolean {
-  const direct = projectChartPosition(position, view)
+  const direct = projectPosition(position, view)
+  if (view.projection === 'globe' && (direct as ScreenPoint & { depth: number }).depth < -1e-12)
+    return false
   const edgePadding = padding + SCREEN_EDGE_EPSILON
   const inside = (point: ScreenPoint) =>
     point.x >= -edgePadding &&
@@ -193,7 +242,7 @@ export class SkyIndex<T extends SkyPosition> {
   private readonly selectedCells: number[] = []
   private generation = 0
 
-  constructor(positions: readonly T[]) {
+  constructor(private readonly positions: readonly T[]) {
     this.cells = Array.from({ length: this.columns * this.rows }, () => [])
     for (const position of positions) {
       if (Math.abs(position.dec) === 90) {
@@ -261,6 +310,12 @@ export class SkyIndex<T extends SkyPosition> {
 
   /** Visits candidate cells once; callers can clip each physical image at pixel precision. */
   forEachInView(view: SkyView, visitor: (position: T) => void, padding = 0): void {
+    if (view.projection === 'globe') {
+      for (const position of this.positions) {
+        if (positionIsVisible(position, view, padding)) visitor(position)
+      }
+      return
+    }
     this.collectCells(view, padding)
     for (const cellId of this.selectedCells) {
       const cell = this.cells[cellId]
@@ -273,6 +328,8 @@ export class SkyIndex<T extends SkyPosition> {
 
   /** Counts each physical star once; fully visible cells use their stored populations. */
   countInView(view: SkyView): number {
+    if (view.projection === 'globe')
+      return this.positions.filter((position) => positionIsVisible(position, view)).length
     this.collectCells(view, 0)
     let count = 0
     for (const cellId of this.selectedCells) {

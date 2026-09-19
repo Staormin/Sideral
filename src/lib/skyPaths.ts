@@ -1,3 +1,4 @@
+import { globeSegment } from './skyGlobe'
 import {
   forEachVisibleCopy,
   projectChartPosition,
@@ -24,6 +25,11 @@ function forEachProjectedSegment(
       const previous = path[index - 1]
       const next = path[index]
       if (!previous || !next) continue
+      if (view.projection === 'globe') {
+        const segment = globeSegment(previous, next, view)
+        if (segment) visitor(segment[0], segment[1], pathIndex, index)
+        continue
+      }
       const start = projectChartPosition(previous, view)
       const dx = (-(next.ra - previous.ra) / 24) * worldWidth
       const dy = (-(next.dec - previous.dec) / 360) * worldWidth

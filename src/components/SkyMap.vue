@@ -12,6 +12,8 @@ import {
 } from '../lib/skyStarField'
 import { CONSTELLATION_FIGURES } from '../lib/skyConstellations'
 import { formatRaGrid, greatCirclePath } from '../lib/skyGeometry'
+import { GlobeStarField } from '../lib/skyGlobeField'
+import { skyFocalLength } from '../lib/skyGlobe'
 import { projectSkyPaths, traceSkyPaths } from '../lib/skyPaths'
 import {
   constrainSkyView,
@@ -25,17 +27,18 @@ import {
   projectPosition,
   raDifference,
   SkyIndex,
-  unprojectChartPoint,
   unprojectPoint,
   wrapRa,
   type ScreenPoint,
   type SkyPosition,
   type SkyView,
+  type SkyProjection,
 } from '../lib/skyProjection'
 import type { Star } from '../types/catalog'
 
 const props = defineProps<{
   active: boolean
+  projection: SkyProjection
   stars: Star[]
   selectedStar: Star | null
   emphasizedStar?: Star | null
@@ -77,7 +80,14 @@ const dragging = ref(false)
 const hovered = ref<Star | null>(null)
 const tooltip = shallowRef<{ name: string; x: number; y: number; above: boolean } | null>(null)
 let tooltipTimer: ReturnType<typeof setTimeout> | undefined
-const view: SkyView = { ra: 6, dec: 12, zoom: 2.3, width: 1, height: 1 }
+const view: SkyView = {
+  projection: props.projection,
+  ra: 6,
+  dec: 12,
+  zoom: 2.3,
+  width: 1,
+  height: 1,
+}
 const cursorClass = computed(() => ({
   'is-dragging': dragging.value,
   'is-hovering': hovered.value,
@@ -95,6 +105,7 @@ let selectionPaths: SkyPosition[][] = []
 let renderStars: RenderStar[] = []
 let namedStars: RenderStar[] = []
 const starField = new StarFieldCache()
+const globeField = new GlobeStarField()
 const MAX_CACHED_ZOOM = 3
 let cacheRefreshTimer: ReturnType<typeof setTimeout> | undefined
 let hoverFrame = 0
@@ -126,6 +137,7 @@ function linkedPaths(worldWidth: number): SkyPosition[][] {
 }
 
 function defaultZoom(): number {
+  if (view.projection === 'globe') return 1
   return Math.min(MAX_ZOOM, 2.3 * Math.max(1, view.height / view.width))
 }
 
@@ -142,6 +154,7 @@ function changeView(): void {
   if (
     props.active &&
     hasViewport &&
+    view.projection !== 'globe' &&
     view.zoom <= MAX_CACHED_ZOOM &&
     starField.ready &&
     !starField.matches(view, pixelRatio)
@@ -168,6 +181,7 @@ function rebuildCatalogue(): void {
   if (cacheRefreshTimer !== undefined) clearTimeout(cacheRefreshTimer)
   cacheRefreshTimer = undefined
   starField.dispose()
+  globeField.dispose()
   figureWorldWidth = 0
   renderStars = props.stars.map(createRenderStar)
   namedStars = renderStars
@@ -225,7 +239,26 @@ function isInViewport(point: ScreenPoint, margin = 0): boolean {
   )
 }
 
+function drawGlobeGrid(ctx: CanvasRenderingContext2D): void {
+  const paths: SkyPosition[][] = []
+  for (let ra = 0; ra < 24; ra += 1) {
+    paths.push(Array.from({ length: 91 }, (_, i) => ({ ra, dec: -90 + i * 2 })))
+  }
+  for (let dec = -75; dec <= 75; dec += 15) {
+    paths.push(Array.from({ length: 181 }, (_, i) => ({ ra: (i * 24) / 180, dec })))
+  }
+  ctx.lineWidth = 1
+  ctx.strokeStyle = 'rgba(126, 144, 163, 0.18)'
+  ctx.beginPath()
+  traceSkyPaths(ctx, paths, view)
+  ctx.stroke()
+}
+
 function drawGrid(ctx: CanvasRenderingContext2D): void {
+  if (view.projection === 'globe') {
+    drawGlobeGrid(ctx)
+    return
+  }
   const raStep = view.zoom > 24 ? 0.125 : view.zoom > 10 ? 0.25 : view.zoom > 4 ? 0.5 : 1
   const decStep = view.zoom > 24 ? 2 : view.zoom > 10 ? 5 : view.zoom > 4 ? 10 : 15
   ctx.lineWidth = 1
@@ -512,41 +545,43 @@ function draw(): void {
   if (!props.active || !hasViewport || !ctx || !canvas.value) return
   ctx.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0)
   ctx.clearRect(0, 0, view.width, view.height)
+  ctx.save()
   if (props.showGrid) drawGrid(ctx)
   if (props.showConstellations) drawConstellations(ctx)
   drawSelectionLines(ctx)
   let visibleCount = 0
   if (props.showStars) {
-    const useCache = view.zoom <= MAX_CACHED_ZOOM
+    const useCache = view.projection !== 'globe' && view.zoom <= MAX_CACHED_ZOOM
     if (useCache && !starField.ready) starField.rebuild(renderStars, view, pixelRatio)
     if (useCache && starField.ready) {
       starField.draw(ctx, view)
       visibleCount = index.countInView(view)
     } else {
       const appearance = starAppearanceScale(view.zoom)
-      index.forEachInView(
-        view,
-        (entry) => {
-          let visible = false
-          forEachProjectedPosition(
-            entry,
-            view,
-            (point) => {
-              if (isInViewport(point)) visible = true
-              drawStar(ctx, entry, point.x, point.y, appearance)
-            },
-            12,
-          )
-          if (visible) visibleCount += 1
-        },
-        24,
-      )
+      const gpu = view.projection === 'globe' && globeField.draw(ctx, renderStars, view, pixelRatio)
+      const visit = (entry: RenderStar) => {
+        let visible = false
+        forEachProjectedPosition(
+          entry,
+          view,
+          (point) => {
+            if (isInViewport(point)) visible = true
+            if (!gpu || entry.star.mag < 6) drawStar(ctx, entry, point.x, point.y, appearance)
+          },
+          12,
+        )
+        if (visible) visibleCount += 1
+      }
+      if (view.projection === 'globe') {
+        for (const entry of renderStars) visit(entry)
+      } else index.forEachInView(view, visit, 24)
     }
     if (props.showLabels) drawStarLabels(ctx)
     drawSelectionMarkers(ctx)
     if (hovered.value) drawMarker(ctx, hovered.value, false)
     if (props.selectedStar) drawMarker(ctx, props.selectedStar, true)
   }
+  ctx.restore()
   updateStarGlows()
   updateEmphasis()
   updateSelectionFlow()
@@ -569,11 +604,13 @@ function zoomAt(
   const clampedZoom = Math.max(minimumSkyZoom(view), Math.min(MAX_ZOOM, nextZoom))
   if (clampedZoom === view.zoom) return
   atDefaultView = false
-  const anchor = unprojectChartPoint(point, view)
+  const anchor = unprojectPoint(point, view)
   view.zoom = clampedZoom
-  const after = unprojectChartPoint(point, view)
-  view.ra += raDifference(anchor.ra, after.ra)
-  view.dec += latitudeDifference(anchor.dec, after.dec)
+  const after = unprojectPoint(point, view)
+  if (Number.isFinite(anchor.ra) && Number.isFinite(after.ra)) {
+    view.ra += raDifference(anchor.ra, after.ra)
+    view.dec += latitudeDifference(anchor.dec, after.dec)
+  }
   changeView()
 }
 
@@ -597,7 +634,7 @@ function focusStar(star: Star): void {
   atDefaultView = false
   view.ra = star.ra
   view.dec = star.dec
-  view.zoom = Math.max(view.zoom, 4.5)
+  view.zoom = Math.max(view.zoom, view.projection === 'globe' ? 2 : 4.5)
   changeView()
 }
 
@@ -633,6 +670,14 @@ function focusSelection(): void {
 }
 
 function panBy(dx: number, dy: number): void {
+  if (view.projection === 'globe') {
+    atDefaultView = false
+    const degrees = 180 / Math.PI / skyFocalLength(view)
+    view.ra += (dx * degrees) / (15 * Math.max(0.2, Math.cos((view.dec * Math.PI) / 180)))
+    view.dec += dy * degrees
+    changeView()
+    return
+  }
   const ra = wrapRa(view.ra + (dx / (view.width * view.zoom)) * 24)
   const dec = Math.max(-90, Math.min(90, view.dec + (dy / (view.width * view.zoom)) * 360))
   if (ra === view.ra && dec === view.dec) return
@@ -650,7 +695,7 @@ function localPoint(event: { clientX: number; clientY: number }): ScreenPoint {
 function findStar(point: ScreenPoint): Star | null {
   if (!props.showStars) return null
   const position = unprojectPoint(point, view)
-  if (Math.abs(position.dec) > 90) return null
+  if (!Number.isFinite(position.dec) || Math.abs(position.dec) > 90) return null
   const searchView: SkyView = {
     ...position,
     width: 40,
@@ -660,11 +705,12 @@ function findStar(point: ScreenPoint): Star | null {
   let best: Star | null = null
   let bestScore = Number.POSITIVE_INFINITY
   const radiusScale = starAppearanceScale(view.zoom).radius
-  index.forEachInView(searchView, (entry) => {
-    const projected = projectPosition(entry, searchView)
+  const hitView = view.projection === 'globe' ? view : searchView
+  index.forEachInView(hitView, (entry) => {
+    const projected = projectPosition(entry, hitView)
     const distance = Math.hypot(
-      projected.x - searchView.width / 2,
-      projected.y - searchView.height / 2,
+      projected.x - (view.projection === 'globe' ? point.x : searchView.width / 2),
+      projected.y - (view.projection === 'globe' ? point.y : searchView.height / 2),
     )
     const radius = entry.baseRadius * radiusScale
     // Respect the visible disk: a faint neighbour must not steal a click inside
@@ -911,6 +957,34 @@ watch(
   { flush: 'post' },
 )
 
+const savedViews = new Map<
+  SkyProjection,
+  { ra: number; dec: number; zoom: number; default: boolean }
+>()
+watch(
+  () => props.projection,
+  (projection, previous) => {
+    savedViews.set(previous, {
+      ra: view.ra,
+      dec: view.dec,
+      zoom: view.zoom,
+      default: atDefaultView,
+    })
+    view.projection = projection
+    const saved = savedViews.get(projection)
+    if (saved) {
+      Object.assign(view, saved)
+      atDefaultView = saved.default
+    } else {
+      view.zoom = defaultZoom()
+      atDefaultView = false
+    }
+    figureWorldWidth = 0
+    selectionWorldWidth = 0
+    changeView()
+  },
+)
+
 watch(() => props.stars, rebuildCatalogue)
 watch(() => props.animateSelection, updateSelectionFlow)
 watch(() => props.emphasizedStar, scheduleDraw)
@@ -962,6 +1036,7 @@ onBeforeUnmount(() => {
   cancelHover()
   if (cacheRefreshTimer !== undefined) clearTimeout(cacheRefreshTimer)
   starField.dispose()
+  globeField.dispose()
   pointers.clear()
 })
 
@@ -969,7 +1044,7 @@ defineExpose({ zoomIn, zoomOut, resetView, focusStar, focusConstellation, setZoo
 </script>
 
 <template>
-  <div class="sky-map">
+  <div class="sky-map" :class="{ 'sky-map--globe': projection === 'globe' }">
     <canvas
       ref="canvas"
       class="sky-map__canvas"

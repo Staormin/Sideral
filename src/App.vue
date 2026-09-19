@@ -15,6 +15,7 @@ import { starColor, starName, formatRa, formatDec } from './lib/astronomy'
 import { buildSearchIndex, searchResultIdentifier, type SearchEntry } from './lib/starSearch'
 import { searchSky, type SkySearchResult } from './lib/skySearch'
 import type { AssignmentSlot } from './lib/starAssignments'
+import type { SkyProjection } from './lib/skyProjection'
 import type { Star } from './types/catalog'
 
 const stars = shallowRef<Star[]>([])
@@ -67,6 +68,7 @@ const query = ref('')
 const searchOpen = ref(false)
 const searchResults = shallowRef<SkySearchResult[]>([])
 const activeResult = ref(0)
+const projection = ref<SkyProjection>('plane')
 const showGrid = ref(true)
 const showStars = ref(true)
 const showLabels = ref(true)
@@ -415,6 +417,7 @@ onBeforeUnmount(() => {
             :emphasized-star="emphasizedStar"
             :assigned-stars="assignments"
             :animate-selection="unlockStatus === 'checking'"
+            :projection="projection"
             :show-grid="showGrid"
             :show-stars="showStars"
             :show-labels="showLabels"
@@ -457,6 +460,7 @@ onBeforeUnmount(() => {
               >
             </div>
             <DisplaySettings
+              v-model:projection="projection"
               v-model:stars="showStars"
               v-model:constellations="showConstellations"
               v-model:grid="showGrid"
