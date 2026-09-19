@@ -1,0 +1,9 @@
+node_modules
+dist
+coverage
+playwright-report
+test-results
+package-lock.json
+public/data/*.json
+src/lib/skyConstellations.ts
+.playwright-mcp/
