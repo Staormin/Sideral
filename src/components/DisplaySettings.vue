@@ -3,8 +3,10 @@ import { ref } from 'vue'
 import { mdiTuneVariant } from '@mdi/js'
 
 const showConstellations = defineModel<boolean>('constellations', { required: true })
+const showStars = defineModel<boolean>('stars', { required: true })
 const showGrid = defineModel<boolean>('grid', { required: true })
 const showLabels = defineModel<boolean>('labels', { required: true })
+const showConstellationLabels = defineModel<boolean>('constellationLabels', { required: true })
 const open = ref(false)
 </script>
 
@@ -34,6 +36,22 @@ const open = ref(false)
     </template>
     <v-card class="display-settings-panel" width="280" max-width="calc(100vw - 24px)">
       <h2>Affichage</h2>
+      <div class="layer-row">
+        <span>
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="m12 3 2 7 7 2-7 2-2 7-2-7-7-2 7-2z" />
+          </svg>
+          Étoiles
+        </span>
+        <v-switch
+          v-model="showStars"
+          aria-label="Afficher les étoiles"
+          color="primary"
+          hide-details
+          inset
+          density="compact"
+        />
+      </div>
       <div class="layer-row">
         <span>
           <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -80,6 +98,22 @@ const open = ref(false)
         <v-switch
           v-model="showLabels"
           aria-label="Afficher les noms des étoiles"
+          color="primary"
+          hide-details
+          inset
+          density="compact"
+        />
+      </div>
+      <div class="layer-row">
+        <span>
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M4 5h16M12 5v15M8 20h8" />
+          </svg>
+          Noms des constellations
+        </span>
+        <v-switch
+          v-model="showConstellationLabels"
+          aria-label="Afficher les noms des constellations"
           color="primary"
           hide-details
           inset

@@ -291,3 +291,41 @@ test('reduced motion keeps assigned stars luminous without animations', async ({
   }
   await expectAlignedGlows(page)
 })
+
+test('star tooltip waits for 500 ms of stillness and clears on movement or navigation', async ({
+  page,
+}) => {
+  await page.goto('/')
+  await assignStar(page, 'Étoile A', 1)
+  await expect(points(page)).toHaveCount(1)
+  const canvas = page.locator('canvas.sky-map__canvas')
+  const bounds = (await canvas.boundingBox())!
+  const position = (await glowPositions(page))[0]!
+  await page.clock.install({ time: new Date('2026-01-01T00:00:00Z') })
+  await page.clock.pauseAt(new Date('2026-01-01T00:00:01Z'))
+  const tooltip = page.getByRole('tooltip')
+  await page.mouse.move(bounds.x + position.x, bounds.y + position.y)
+  await page.clock.runFor(499)
+  await expect(tooltip).toHaveCount(0)
+  await page.clock.runFor(1)
+  await expect(tooltip).toHaveText('Étoile A')
+  await page.mouse.move(bounds.x + position.x + 1, bounds.y + position.y)
+  await expect(tooltip).toHaveCount(0)
+  await page.clock.runFor(300)
+  await page.mouse.move(bounds.x + position.x + 2, bounds.y + position.y)
+  await page.clock.runFor(300)
+  await expect(tooltip).toHaveCount(0)
+  await page.clock.runFor(200)
+  await expect(tooltip).toHaveText('Étoile A')
+  await canvas.press('Escape')
+  await expect(tooltip).toHaveCount(0)
+  await page.mouse.move(bounds.x + position.x, bounds.y + position.y)
+  await page.clock.runFor(250)
+  await canvas.press('=')
+  await page.clock.runFor(600)
+  await expect(tooltip).toHaveCount(0)
+  await page.mouse.move(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2)
+  await page.mouse.move(0, 0)
+  await page.clock.runFor(600)
+  await expect(tooltip).toHaveCount(0)
+})

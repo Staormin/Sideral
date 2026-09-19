@@ -68,7 +68,9 @@ const searchOpen = ref(false)
 const searchResults = shallowRef<SkySearchResult[]>([])
 const activeResult = ref(0)
 const showGrid = ref(true)
+const showStars = ref(true)
 const showLabels = ref(true)
+const showConstellationLabels = ref(true)
 const showConstellations = ref(true)
 const mobilePanel = ref(false)
 const riddlesOpen = ref(window.location.hash === '#enigmes')
@@ -414,7 +416,9 @@ onBeforeUnmount(() => {
             :assigned-stars="assignments"
             :animate-selection="unlockStatus === 'checking'"
             :show-grid="showGrid"
+            :show-stars="showStars"
             :show-labels="showLabels"
+            :show-constellation-labels="showConstellationLabels"
             :show-constellations="showConstellations"
             @select="openStar"
             @view-change="view = $event"
@@ -453,9 +457,11 @@ onBeforeUnmount(() => {
               >
             </div>
             <DisplaySettings
+              v-model:stars="showStars"
               v-model:constellations="showConstellations"
               v-model:grid="showGrid"
               v-model:labels="showLabels"
+              v-model:constellation-labels="showConstellationLabels"
             />
           </div>
         </section>

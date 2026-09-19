@@ -43,6 +43,8 @@ const props = defineProps<{
   animateSelection: boolean
   showGrid: boolean
   showLabels: boolean
+  showConstellationLabels: boolean
+  showStars: boolean
   showConstellations: boolean
 }>()
 
@@ -73,6 +75,8 @@ const emphasisPoints = shallowRef<StarGlowPoint[]>([])
 const flowPaths = shallowRef<string[]>([])
 const dragging = ref(false)
 const hovered = ref<Star | null>(null)
+const tooltip = shallowRef<{ name: string; x: number; y: number; above: boolean } | null>(null)
+let tooltipTimer: ReturnType<typeof setTimeout> | undefined
 const view: SkyView = { ra: 6, dec: 12, zoom: 2.3, width: 1, height: 1 }
 const cursorClass = computed(() => ({
   'is-dragging': dragging.value,
@@ -292,7 +296,7 @@ function drawConstellations(ctx: CanvasRenderingContext2D): void {
   }
   for (const figure of figures) traceSkyPaths(ctx, figure.paths, view)
   ctx.stroke()
-  if (!props.showLabels) return
+  if (!props.showConstellationLabels) return
   ctx.font = '500 10px "Manrope Variable", sans-serif'
   ctx.textAlign = 'center'
   ctx.textBaseline = 'middle'
@@ -512,35 +516,37 @@ function draw(): void {
   if (props.showConstellations) drawConstellations(ctx)
   drawSelectionLines(ctx)
   let visibleCount = 0
-  const useCache = view.zoom <= MAX_CACHED_ZOOM
-  if (useCache && !starField.ready) starField.rebuild(renderStars, view, pixelRatio)
-  if (useCache && starField.ready) {
-    starField.draw(ctx, view)
-    visibleCount = index.countInView(view)
-  } else {
-    const appearance = starAppearanceScale(view.zoom)
-    index.forEachInView(
-      view,
-      (entry) => {
-        let visible = false
-        forEachProjectedPosition(
-          entry,
-          view,
-          (point) => {
-            if (isInViewport(point)) visible = true
-            drawStar(ctx, entry, point.x, point.y, appearance)
-          },
-          12,
-        )
-        if (visible) visibleCount += 1
-      },
-      24,
-    )
+  if (props.showStars) {
+    const useCache = view.zoom <= MAX_CACHED_ZOOM
+    if (useCache && !starField.ready) starField.rebuild(renderStars, view, pixelRatio)
+    if (useCache && starField.ready) {
+      starField.draw(ctx, view)
+      visibleCount = index.countInView(view)
+    } else {
+      const appearance = starAppearanceScale(view.zoom)
+      index.forEachInView(
+        view,
+        (entry) => {
+          let visible = false
+          forEachProjectedPosition(
+            entry,
+            view,
+            (point) => {
+              if (isInViewport(point)) visible = true
+              drawStar(ctx, entry, point.x, point.y, appearance)
+            },
+            12,
+          )
+          if (visible) visibleCount += 1
+        },
+        24,
+      )
+    }
+    if (props.showLabels) drawStarLabels(ctx)
+    drawSelectionMarkers(ctx)
+    if (hovered.value) drawMarker(ctx, hovered.value, false)
+    if (props.selectedStar) drawMarker(ctx, props.selectedStar, true)
   }
-  if (props.showLabels) drawStarLabels(ctx)
-  drawSelectionMarkers(ctx)
-  if (hovered.value) drawMarker(ctx, hovered.value, false)
-  if (props.selectedStar) drawMarker(ctx, props.selectedStar, true)
   updateStarGlows()
   updateEmphasis()
   updateSelectionFlow()
@@ -642,6 +648,7 @@ function localPoint(event: { clientX: number; clientY: number }): ScreenPoint {
 }
 
 function findStar(point: ScreenPoint): Star | null {
+  if (!props.showStars) return null
   const position = unprojectPoint(point, view)
   if (Math.abs(position.dec) > 90) return null
   const searchView: SkyView = {
@@ -674,12 +681,29 @@ function findStar(point: ScreenPoint): Star | null {
 }
 
 function cancelHover(): void {
+  clearTimeout(tooltipTimer)
+  tooltipTimer = undefined
+  tooltip.value = null
   if (hoverFrame) cancelAnimationFrame(hoverFrame)
   hoverFrame = 0
   hoverPoint = null
 }
 
 function requestHover(point: ScreenPoint): void {
+  clearTimeout(tooltipTimer)
+  tooltip.value = null
+  tooltipTimer = setTimeout(() => {
+    tooltipTimer = undefined
+    if (!props.active || dragging.value) return
+    const star = findStar(point)
+    if (!star) return
+    tooltip.value = {
+      name: starName(star),
+      x: Math.max(8, Math.min(point.x + 14, view.width - 248)),
+      y: point.y > view.height - 60 ? point.y - 14 : point.y + 18,
+      above: point.y > view.height - 60,
+    }
+  }, 500)
   hoverPoint = point
   if (!hoverFrame) {
     hoverFrame = requestAnimationFrame(() => {
@@ -776,6 +800,10 @@ function onPointerLeave(): void {
 function onKeyDown(event: KeyboardEvent): void {
   const step = event.shiftKey ? 160 : 55
   switch (event.key) {
+    case 'Escape':
+      cancelHover()
+      setHovered(null)
+      break
     case 'ArrowLeft':
       panBy(step, 0)
       break
@@ -801,6 +829,7 @@ function onKeyDown(event: KeyboardEvent): void {
       break
     case 'Enter':
     case ' ': {
+      if (!props.showStars) break
       let nearest: Star | null = null
       let distance = Number.POSITIVE_INFINITY
       index.forEachInView(
@@ -886,6 +915,14 @@ watch(() => props.stars, rebuildCatalogue)
 watch(() => props.animateSelection, updateSelectionFlow)
 watch(() => props.emphasizedStar, scheduleDraw)
 watch(
+  () => props.showStars,
+  () => {
+    cancelHover()
+    setHovered(null)
+    scheduleDraw()
+  },
+)
+watch(
   () => props.assignedStars,
   () => {
     selectionWorldWidth = 0
@@ -902,7 +939,7 @@ watch(
   },
 )
 watch(
-  () => [props.showGrid, props.showLabels, props.showConstellations],
+  () => [props.showGrid, props.showLabels, props.showConstellations, props.showConstellationLabels],
   () => {
     setHovered(null)
     scheduleDraw()
@@ -940,7 +977,7 @@ defineExpose({ zoomIn, zoomOut, resetView, focusStar, focusConstellation, setZoo
       tabindex="0"
       role="application"
       aria-label="Carte interactive des étoiles, coordonnées équatoriales J2000"
-      aria-describedby="sky-map-instructions"
+      :aria-describedby="tooltip ? 'sky-map-instructions sky-star-tooltip' : 'sky-map-instructions'"
       @wheel.prevent="onWheel"
       @pointerdown="onPointerDown"
       @pointermove="onPointerMove"
@@ -948,15 +985,33 @@ defineExpose({ zoomIn, zoomOut, resetView, focusStar, focusConstellation, setZoo
       @pointercancel="onPointerCancel"
       @lostpointercapture="onPointerCancel"
       @pointerleave="onPointerLeave"
+      @blur="cancelHover"
       @keydown="onKeyDown"
       @dblclick.prevent="zoomAt(view.zoom * 1.8, localPoint($event))"
     >
       Carte du ciel : utilisez la recherche d’étoiles pour consulter le catalogue si votre
       navigateur ne prend pas en charge le canvas.
     </canvas>
+    <div
+      v-if="tooltip"
+      id="sky-star-tooltip"
+      class="sky-map__tooltip"
+      role="tooltip"
+      :style="{
+        left: `${tooltip.x}px`,
+        top: `${tooltip.y}px`,
+        transform: tooltip.above ? 'translateY(-100%)' : undefined,
+      }"
+    >
+      {{ tooltip.name }}
+    </div>
     <SelectionFlow v-if="active && animateSelection && flowPaths.length" :paths="flowPaths" />
-    <StarScintillation v-if="active" :points="glowPoints" />
-    <StarScintillation v-if="active && emphasisPoints.length" :points="emphasisPoints" intense />
+    <StarScintillation v-if="active && showStars" :points="glowPoints" />
+    <StarScintillation
+      v-if="active && showStars && emphasisPoints.length"
+      :points="emphasisPoints"
+      intense
+    />
     <span id="sky-map-instructions" class="sky-map__instructions">
       Glissez pour déplacer la carte. Molette, pincement ou touches plus et moins pour zoomer. Les
       flèches déplacent la carte. Entrée sélectionne l’étoile la plus proche du centre. La touche
@@ -1001,6 +1056,22 @@ defineExpose({ zoomIn, zoomOut, resetView, focusStar, focusConstellation, setZoo
 
 .sky-map__canvas.is-dragging {
   cursor: grabbing;
+}
+
+.sky-map__tooltip {
+  position: absolute;
+  z-index: 4;
+  max-width: min(240px, calc(100% - 16px));
+  padding: 8px 12px;
+  color: #eee5d8;
+  overflow-wrap: anywhere;
+  pointer-events: none;
+  background: #101823f2;
+  border: 1px solid #d7bc8c55;
+  border-radius: 6px;
+  box-shadow: 0 4px 16px #0006;
+  font-size: 13px;
+  line-height: 1.4;
 }
 
 .sky-map__instructions {
