@@ -34,6 +34,28 @@ const searchIndex = shallowRef<SearchEntry[]>([])
 const documentSurface = ref<InstanceType<typeof DocumentSurface> | null>(null)
 const documentSelection = ref(false)
 const documentTransition = ref(false)
+const feedbackMessage = ref('')
+const feedbackVisible = ref(false)
+let feedbackId = 0
+
+async function showFeedback(message: string) {
+  const id = ++feedbackId
+  feedbackVisible.value = false
+  await nextTick()
+  if (id !== feedbackId) return
+  feedbackMessage.value = message
+  feedbackVisible.value = true
+}
+
+function clearFeedback() {
+  feedbackId += 1
+  feedbackVisible.value = false
+}
+
+watch(unlockStatus, (status) => {
+  clearFeedback()
+  if (status === 'miss') void showFeedback('Ce ne sont pas les bonnes lumières')
+})
 const documentOpen = computed(() => unlockStatus.value === 'unlocked' && !!unlockedContent.value)
 const atlasActive = computed(() => !documentOpen.value || documentSelection.value)
 const map = ref<InstanceType<typeof SkyMap> | null>(null)
@@ -95,6 +117,7 @@ function selectStar(star: Star) {
 
 function openStar(star: Star) {
   if (documentOpen.value && documentSelection.value) {
+    clearFeedback()
     selectedStar.value = null
     emphasizedStar.value = star
     map.value?.focusStar(star)
@@ -106,6 +129,7 @@ function openStar(star: Star) {
 
 function requestDocumentSelection() {
   if (!documentOpen.value) return
+  clearFeedback()
   documentSelection.value = true
   riddlesOpen.value = false
   selectedStar.value = null
@@ -115,6 +139,7 @@ function requestDocumentSelection() {
 
 async function returnToDocument(star: Star | null = null) {
   if (!documentOpen.value || !documentSelection.value) return
+  clearFeedback()
   documentSelection.value = false
   emphasizedStar.value = null
   selectedStar.value = null
@@ -208,6 +233,9 @@ onBeforeUnmount(() => {
 
 <template>
   <v-app>
+    <v-snackbar v-model="feedbackVisible" :timeout="6000" location="bottom" role="status">
+      {{ feedbackMessage }}
+    </v-snackbar>
     <Transition name="document-fade">
       <div v-if="documentTransition" class="document-curtain" aria-hidden="true" />
     </Transition>
@@ -220,6 +248,7 @@ onBeforeUnmount(() => {
         @request-selection="requestDocumentSelection"
         @request-display="displayDocument"
         @selection-checked="emphasizedStar = null"
+        @feedback="showFeedback"
       />
     </Transition>
     <div v-show="atlasActive" class="atlas-shell">

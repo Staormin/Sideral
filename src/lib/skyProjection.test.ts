@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  constrainSkyView,
   latitudeDifference,
   normalizeSkyPosition,
   forEachProjectedPosition,
@@ -40,12 +41,12 @@ describe('equatorial projection', () => {
     expect(restored.dec).toBeCloseTo(position.dec)
   })
 
-  it('crosses the north pole by reflecting latitude and rotating RA by 12h', () => {
+  it('keeps positions beyond the north pole outside the physical chart', () => {
     const polarView = { ...view, dec: 89 }
     const twoDegrees = (2 / 360) * view.width * view.zoom
     const point = { x: view.width / 2, y: view.height / 2 - twoDegrees }
     expect(unprojectChartPoint(point, polarView)).toEqual({ ra: 0, dec: 91 })
-    expect(unprojectPoint(point, polarView)).toEqual({ ra: 12, dec: 89 })
+    expect(unprojectPoint(point, polarView)).toEqual({ ra: 0, dec: 91 })
     expect(normalizeSkyPosition({ ra: 2, dec: -91 })).toEqual({ ra: 14, dec: -89 })
   })
 
@@ -65,11 +66,11 @@ describe('equatorial projection', () => {
     expect(wrapLatitude(181)).toBe(-179)
     expect(wrapLatitude(-181)).toBe(179)
     expect(wrapLatitude(360)).toBe(0)
-    expect(latitudeDifference(-179, 179)).toBe(2)
+    expect(latitudeDifference(-179, 179)).toBe(-358)
     expect(normalizeSkyPosition({ ra: 0, dec: 180 })).toEqual({ ra: 12, dec: 0 })
     expect(normalizeSkyPosition({ ra: 0, dec: 360 })).toEqual({ ra: 0, dec: 0 })
     const point = { x: 600, y: 350 - view.width * view.zoom }
-    expect(unprojectPoint(point, view)).toEqual({ ra: 0, dec: 0 })
+    expect(unprojectPoint(point, view)).toEqual({ ra: 0, dec: 360 })
   })
 
   function unitVector(position: SkyPosition): number[] {
@@ -95,22 +96,45 @@ describe('equatorial projection', () => {
     }
   })
 
-  it('round-trips the reflected chart image into the same physical star', () => {
+  it('does not move a distant star into the viewport through a reflected image', () => {
     const position = { ra: 13, dec: 84 }
-    const reflectedView = { ...view, ra: 1, dec: 98 }
-    const projected = projectPosition(position, reflectedView)
-    expect(projected.x).toBe(600)
-    expect(projected.y).toBeCloseTo(350 + (2 / 360) * 4800)
-    expect(unprojectPoint(projected, reflectedView)).toEqual(position)
+    const polarView = { ...view, ra: 1, dec: 90 }
+    const copies: ScreenPoint[] = []
+    forEachProjectedPosition(position, polarView, (point) => copies.push(point))
+    expect(copies).toEqual([])
+    expect(unprojectPoint(projectPosition(position, polarView), polarView)).toEqual(position)
   })
 
-  it('projects the same chart image after complete RA and meridian turns', () => {
+  it('repeats horizontally but keeps vertical distances unwrapped', () => {
     const position = { ra: 23.75, dec: -83 }
     const original = projectChartPosition(position, { ...view, dec: 85 })
     for (const turns of [-12, -1, 0, 1, 12]) {
-      expect(
-        projectChartPosition(position, { ...view, ra: turns * 24, dec: 85 + turns * 360 }),
-      ).toEqual(original)
+      const projected = projectChartPosition(position, {
+        ...view,
+        ra: turns * 24,
+        dec: 85 + turns * 360,
+      })
+      expect(projected.x).toBe(original.x)
+      expect(projected.y).toBeCloseTo(original.y + turns * view.width * view.zoom)
+    }
+  })
+})
+
+describe('viewport boundaries', () => {
+  it.each([
+    { width: 1440, height: 900 },
+    { width: 390, height: 844 },
+    { width: 844, height: 390 },
+  ])('keeps both viewport edges inside the chart at every zoom for %j', (dimensions) => {
+    for (const zoom of [0.1, 1, 2.3, 8, 96]) {
+      for (const dec of [-10000, -90, 0, 90, 10000]) {
+        const constrained = { ...dimensions, ra: 6, dec, zoom }
+        constrainSkyView(constrained)
+        const top = unprojectPoint({ x: 0, y: 0 }, constrained).dec
+        const bottom = unprojectPoint({ x: 0, y: dimensions.height }, constrained).dec
+        expect(top).toBeLessThanOrEqual(90 + 1e-9)
+        expect(bottom).toBeGreaterThanOrEqual(-90 - 1e-9)
+      }
     }
   })
 })
@@ -220,21 +244,13 @@ describe('fitting celestial figures', () => {
 })
 
 describe('visible repeated images', () => {
-  it('places the reflected polar image half a turn away in RA and reverses its latitude', () => {
+  it('shows a polar star only once, below the north boundary', () => {
     const viewport = { ...view, ra: 2, dec: 90, width: 1200, height: 1200, zoom: 1 }
-    const position = { ra: 2, dec: 80 }
     const copies: ScreenPoint[] = []
-    forEachProjectedPosition(position, viewport, (point) => copies.push(point))
-    expect(copies).toHaveLength(3)
-    expect(copies.map((point) => point.x)).toEqual([600, 0, 1200])
+    forEachProjectedPosition({ ra: 2, dec: 80 }, viewport, (point) => copies.push(point))
+    expect(copies).toHaveLength(1)
+    expect(copies[0]?.x).toBe(600)
     expect(copies[0]?.y).toBeCloseTo(600 + 100 / 3)
-    expect(copies[1]?.y).toBeCloseTo(600 - 100 / 3)
-    expect(copies[2]?.y).toBeCloseTo(600 - 100 / 3)
-    for (const point of copies) {
-      const restored = unprojectPoint(point, viewport)
-      expect(restored.ra).toBeCloseTo(position.ra)
-      expect(restored.dec).toBeCloseTo(position.dec)
-    }
   })
 
   it('does not duplicate the arbitrarily chosen meridian of an exact pole', () => {
@@ -244,11 +260,11 @@ describe('visible repeated images', () => {
     expect(copies).toEqual([{ x: 600, y: 300 }])
   })
 
-  it('fills tall viewports with every intersecting vertical copy', () => {
+  it('does not repeat stars vertically in tall viewports', () => {
     const viewport = { ...view, width: 320, height: 900, zoom: 1 }
     const copies: ScreenPoint[] = []
     forEachVisibleCopy({ x: 160, y: 450 }, viewport, (point) => copies.push(point))
-    expect(copies).toEqual([130, 450, 770].map((y) => ({ x: 160, y })))
+    expect(copies).toEqual([{ x: 160, y: 450 }])
   })
 
   it('includes copies touching either seam and respects glyph padding', () => {
@@ -256,8 +272,6 @@ describe('visible repeated images', () => {
     const copies: ScreenPoint[] = []
     forEachVisibleCopy({ x: 1204, y: 1202 }, viewport, (point) => copies.push(point), 5)
     expect(copies).toEqual([
-      { x: 4, y: 2 },
-      { x: 1204, y: 2 },
       { x: 4, y: 1202 },
       { x: 1204, y: 1202 },
     ])
@@ -302,10 +316,10 @@ describe('star spatial index', () => {
         .query({ ...view, dec: 90 })
         .map((star) => star.id)
         .sort(),
-    ).toEqual([4, 6])
+    ).toEqual([4])
   })
 
-  it('counts each catalogue entry once when a portrait view contains several vertical repeats', () => {
+  it('counts each catalogue entry once in a tall portrait view', () => {
     const portrait = { ...view, width: 320, height: 1200, zoom: 1, dec: 82 }
     expect(index.query(portrait)).toHaveLength(stars.length)
     expect(index.countInView(portrait)).toBe(stars.length)
@@ -321,23 +335,13 @@ describe('star spatial index', () => {
 
   // Independent oracle: enumerate unfolded angular coordinates without using projection helpers.
   function isVisible(position: SkyPosition, viewport: SkyView, padding = 0): boolean {
-    const families = [{ ra: position.ra, dec: position.dec }]
-    if (Math.abs(position.dec) !== 90)
-      families.push({ ra: position.ra + 12, dec: 180 - position.dec })
     const worldWidth = viewport.width * viewport.zoom
     const edgePadding = padding + 1e-7
-    for (const family of families) {
-      for (let verticalTurn = -4; verticalTurn <= 4; verticalTurn += 1) {
-        const y =
-          viewport.height / 2 -
-          ((family.dec + verticalTurn * 360 - viewport.dec) / 360) * worldWidth
-        if (y < -edgePadding || y > viewport.height + edgePadding) continue
-        for (let horizontalTurn = -4; horizontalTurn <= 4; horizontalTurn += 1) {
-          const x =
-            viewport.width / 2 - ((family.ra + horizontalTurn * 24 - viewport.ra) / 24) * worldWidth
-          if (x >= -edgePadding && x <= viewport.width + edgePadding) return true
-        }
-      }
+    const y = viewport.height / 2 - ((position.dec - viewport.dec) / 360) * worldWidth
+    if (y < -edgePadding || y > viewport.height + edgePadding) return false
+    for (let turn = -4; turn <= 4; turn += 1) {
+      const x = viewport.width / 2 - ((position.ra + turn * 24 - viewport.ra) / 24) * worldWidth
+      if (x >= -edgePadding && x <= viewport.width + edgePadding) return true
     }
     return false
   }

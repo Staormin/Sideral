@@ -220,7 +220,7 @@ test('scintillation animates while the sky canvas stays idle', async ({ page }) 
   expect(result.after.clears).toBe(result.before.clears)
 })
 
-test('glow centers track the canvas through panning, zooming and pole crossings', async ({
+test('glow centers track the canvas through panning, zooming and polar limits', async ({
   page,
 }) => {
   await page.goto('/')
@@ -257,9 +257,9 @@ test('glow centers track the canvas through panning, zooming and pole crossings'
   for (let step = 0; step < 7; step += 1) await canvas.press('-')
   await expectAlignedGlows(page)
   const coordinates = page.locator('.map-coordinates')
-  const beforeCrossing = (await coordinates.textContent()) ?? ''
+  const beforeDrag = (await coordinates.textContent()) ?? ''
   await dragMap(page, 0, bounds.width * 0.5)
-  await expect(coordinates).not.toHaveText(beforeCrossing)
+  await expect(coordinates).toHaveText(beforeDrag)
   await expectAlignedGlows(page)
   expect(await points(page).count()).toBeGreaterThan(0)
 })

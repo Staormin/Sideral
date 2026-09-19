@@ -90,20 +90,18 @@ describe('celestial path drawing', () => {
     ])
   })
 
-  it('reflects declination and shifts right ascension by twelve hours beyond a pole', () => {
-    const view = { ...defaultView, ra: 12, dec: 100 }
-    const segments = trace(
-      [
+  it('does not reflect distant paths into view beyond a pole', () => {
+    expect(
+      trace(
         [
-          { ra: 0, dec: 80 },
-          { ra: 1, dec: 70 },
+          [
+            { ra: 0, dec: 80 },
+            { ra: 1, dec: 70 },
+          ],
         ],
-      ],
-      view,
-    )
-    expect(segments).toHaveLength(1)
-    expect(segments[0]!.slice(0, 3)).toEqual([120, 60, 100])
-    expect(segments[0]![3]).toBeCloseTo(60 - 40 / 3)
+        { ...defaultView, ra: 12, dec: 90 },
+      ),
+    ).toEqual([])
   })
 
   it('keeps separated polar runs separate instead of drawing a horizontal pole bridge', () => {
@@ -118,14 +116,14 @@ describe('celestial path drawing', () => {
       ],
     ] as const
     const segments = trace(paths, { ...defaultView, ra: 3, dec: 90, zoom: 1 })
-    expect(segments).toHaveLength(6)
+    expect(segments).toHaveLength(3)
     for (const [x1, y1, x2, y2] of segments) {
       expect(x1).toBe(x2)
       expect(Math.abs(y2 - y1)).toBeCloseTo(20 / 3)
     }
   })
 
-  it('repeats physical runs through a tall viewport every full meridian turn', () => {
+  it('shows physical runs once in a tall viewport', () => {
     const view = { ...defaultView, zoom: 1, height: 1000 }
     const segments = trace(
       [
@@ -137,8 +135,8 @@ describe('celestial path drawing', () => {
       view,
     )
     const direct = segments.filter(([x]) => x === 120)
-    expect(direct.map(([, y]) => y)).toEqual([20, 260, 500, 740, 980])
-    expect(segments.some(([x, y]) => x === 0 && y === 380)).toBe(true)
+    expect(direct.map(([, y]) => y)).toEqual([500])
+    expect(segments).toHaveLength(1)
     expect(segments.every(([, y1, , y2]) => y1 === y2)).toBe(true)
   })
 
@@ -250,16 +248,16 @@ describe('continuous SVG celestial paths', () => {
     expectSameGeometry(paths, view)
   })
 
-  it('keeps all repeated chart copies separate in a tall viewport', () => {
+  it('does not repeat SVG paths vertically in a tall viewport', () => {
     const paths = [[0, 1, 2].map((ra) => ({ ra, dec: 0 }))]
     const view = { ...defaultView, zoom: 1, height: 1000 }
     const projected = projectSkyPaths(paths, view)
-    expect(projected.filter((path) => path.startsWith('M 120 '))).toHaveLength(5)
+    expect(projected.filter((path) => path.startsWith('M 120 '))).toHaveLength(1)
     expect(projected.every((path) => (path.match(/L /g) ?? []).length <= 2)).toBe(true)
     expectSameGeometry(paths, view)
   })
 
-  it.each([-1, 1])('keeps both reflected sides of pole %i separate', (sign) => {
+  it.each([-1, 1])('keeps separate great-circle runs at pole %i', (sign) => {
     const view = { ...defaultView, ra: 3, dec: sign * 90 }
     const paths = greatCirclePath(
       { ra: 3, dec: sign * 80 },
@@ -267,7 +265,7 @@ describe('continuous SVG celestial paths', () => {
       view.width * view.zoom,
     )
     const projected = projectSkyPaths(paths, view)
-    expect(projected.length).toBeGreaterThanOrEqual(2)
+    expect(projected.length).toBeGreaterThanOrEqual(1)
     for (const [x1, , x2] of svgSegments(projected)) expect(x1).toBeCloseTo(x2, 8)
     expectSameGeometry(paths, view)
   })

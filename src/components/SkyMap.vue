@@ -14,11 +14,12 @@ import { CONSTELLATION_FIGURES } from '../lib/skyConstellations'
 import { formatRaGrid, greatCirclePath } from '../lib/skyGeometry'
 import { projectSkyPaths, traceSkyPaths } from '../lib/skyPaths'
 import {
+  constrainSkyView,
   fitSkyPositions,
   forEachProjectedPosition,
   latitudeDifference,
   MAX_ZOOM,
-  MIN_ZOOM,
+  minimumSkyZoom,
   normalizeSkyPosition,
   projectChartPosition,
   projectPosition,
@@ -26,7 +27,6 @@ import {
   SkyIndex,
   unprojectChartPoint,
   unprojectPoint,
-  wrapLatitude,
   wrapRa,
   type ScreenPoint,
   type SkyPosition,
@@ -130,8 +130,7 @@ function scheduleDraw(): void {
 }
 
 function changeView(): void {
-  view.ra = wrapRa(view.ra)
-  view.dec = wrapLatitude(view.dec)
+  constrainSkyView(view)
   cancelHover()
   setHovered(null)
   if (cacheRefreshTimer !== undefined) clearTimeout(cacheRefreshTimer)
@@ -232,28 +231,19 @@ function drawGrid(ctx: CanvasRenderingContext2D): void {
   ctx.textBaseline = 'top'
   const worldWidth = view.width * view.zoom
   const halfDec = (view.height / worldWidth) * 180
-  const minLatitude = view.dec - halfDec
-  const maxLatitude = view.dec + halfDec
-  const labelRows: number[] = []
-  for (
-    let strip = Math.floor((minLatitude + 90) / 180);
-    strip <= Math.floor((maxLatitude + 90) / 180);
-    strip += 1
-  ) {
-    const top = view.height / 2 + ((view.dec - (90 + strip * 180)) / 360) * worldWidth
-    const bottom = top + worldWidth / 2
-    const y = Math.max(15, top + 12)
-    if (y < Math.min(view.height - 25, bottom - 14)) labelRows.push(y)
-  }
+  const minLatitude = Math.max(-90, view.dec - halfDec)
+  const maxLatitude = Math.min(90, view.dec + halfDec)
+  const top = view.height / 2 + ((view.dec - 90) / 360) * worldWidth
+  const bottom = top + worldWidth / 2
+  const labelY = Math.max(15, top + 12)
   ctx.beginPath()
   for (let ra = 0; ra < 24; ra += raStep) {
     const { x } = projectChartPosition({ ra, dec: view.dec }, view)
     if (x < 0 || x > view.width) continue
-    ctx.moveTo(Math.round(x) + 0.5, 0)
-    ctx.lineTo(Math.round(x) + 0.5, view.height)
-    // Label each polar strip separately: crossing a pole changes RA by 12h.
-    for (const y of labelRows)
-      ctx.fillText(formatRaGrid(unprojectPoint({ x, y }, view).ra), x + 8, y)
+    ctx.moveTo(Math.round(x) + 0.5, Math.max(0, top))
+    ctx.lineTo(Math.round(x) + 0.5, Math.min(view.height, bottom))
+    if (labelY < Math.min(view.height - 25, bottom - 14))
+      ctx.fillText(formatRaGrid(ra), x + 8, labelY)
   }
   for (
     let latitude = Math.ceil(minLatitude / decStep) * decStep;
@@ -570,7 +560,7 @@ function zoomAt(
   nextZoom: number,
   point: ScreenPoint = { x: view.width / 2, y: view.height / 2 },
 ): void {
-  const clampedZoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, nextZoom))
+  const clampedZoom = Math.max(minimumSkyZoom(view), Math.min(MAX_ZOOM, nextZoom))
   if (clampedZoom === view.zoom) return
   atDefaultView = false
   const anchor = unprojectChartPoint(point, view)
@@ -638,7 +628,7 @@ function focusSelection(): void {
 
 function panBy(dx: number, dy: number): void {
   const ra = wrapRa(view.ra + (dx / (view.width * view.zoom)) * 24)
-  const dec = wrapLatitude(view.dec + (dy / (view.width * view.zoom)) * 360)
+  const dec = Math.max(-90, Math.min(90, view.dec + (dy / (view.width * view.zoom)) * 360))
   if (ra === view.ra && dec === view.dec) return
   atDefaultView = false
   view.ra = ra
@@ -653,6 +643,7 @@ function localPoint(event: { clientX: number; clientY: number }): ScreenPoint {
 
 function findStar(point: ScreenPoint): Star | null {
   const position = unprojectPoint(point, view)
+  if (Math.abs(position.dec) > 90) return null
   const searchView: SkyView = {
     ...position,
     width: 40,

@@ -13,6 +13,7 @@ const emit = defineEmits<{
   'request-selection': []
   'request-display': [fade: boolean]
   'selection-checked': []
+  feedback: [message: string]
 }>()
 const frame = ref<HTMLIFrameElement | null>(null)
 const ready = ref(false)
@@ -61,6 +62,11 @@ function decodeDocument(data: { id?: unknown; envelope?: unknown; tokens?: unkno
 
 function receiveMessage(event: MessageEvent): void {
   if (!ready.value || event.source !== frame.value?.contentWindow) return
+  if (event.data?.type === 'document:feedback' && selectionRequested) {
+    if (typeof event.data.message === 'string' && event.data.message.length <= 300)
+      emit('feedback', event.data.message)
+    return
+  }
   if (event.data?.type === 'document:decode') {
     decodeDocument(event.data)
     return

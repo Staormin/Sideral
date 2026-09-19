@@ -95,84 +95,38 @@ describe('star raster layout', () => {
   })
 })
 
-describe('star raster continuation across the celestial poles', () => {
-  it('fills a tall viewport with alternating normal and reflected strips', () => {
+describe('star raster boundaries', () => {
+  it('draws one upright vertical strip even in a tall viewport', () => {
     const portraitView = { ...view, width: 320, height: 1400, dec: 87 }
     const { cache, context, copies } = createCache(portraitView)
     cache.draw(context, portraitView)
-
-    const layout = getRasterLayout(portraitView, 1)
-    const strips = new Map(
-      copies.map(({ y, height }) => [Math.min(y, y + height), Math.sign(height)]),
-    )
-    const starts = [...strips.keys()].sort((a, b) => a - b)
-    expect(starts.length).toBeGreaterThan(8)
-    expect((starts[0] ?? Infinity) + layout.gutter).toBeLessThanOrEqual(0)
-    expect((starts.at(-1) ?? -Infinity) + layout.height - layout.gutter).toBeGreaterThanOrEqual(
-      portraitView.height,
-    )
-    for (let index = 1; index < starts.length; index += 1) {
-      expect(starts[index]! - starts[index - 1]!).toBeCloseTo(layout.worldWidth / 2)
-      expect(strips.get(starts[index]!)).toBe(-strips.get(starts[index - 1]!)!)
-    }
-    for (const { x, y, width, height } of copies) {
-      expect(x).toBeLessThan(portraitView.width)
-      expect(x + width).toBeGreaterThan(0)
-      expect(Math.min(y, y + height)).toBeLessThan(portraitView.height)
-      expect(Math.max(y, y + height)).toBeGreaterThan(0)
-    }
+    expect(copies.length).toBeGreaterThan(0)
+    expect(new Set(copies.map((copy) => copy.y)).size).toBe(1)
+    expect(copies.every((copy) => copy.height > 0)).toBe(true)
   })
 
-  it('repeats after 360 degrees while preserving the opposite orientation after 180 degrees', () => {
+  it('does not bring the raster back after a vertical turn', () => {
     const { cache, context, copies, createElement } = createCache(view)
-    cache.draw(context, view)
-    const original = [...copies]
-
     for (const turns of [-3, -1, 1, 4]) {
       copies.length = 0
-      const repeatedView = { ...view, dec: view.dec + turns * 360 }
-      expect(cache.matches(repeatedView, 1)).toBe(true)
-      cache.draw(context, repeatedView)
-      expect(copies).toEqual(original)
+      cache.draw(context, { ...view, dec: view.dec + turns * 360 })
+      expect(copies).toEqual([])
     }
-    copies.length = 0
-    cache.draw(context, { ...view, dec: view.dec + 180 })
-    expect(copies).not.toEqual(original)
     expect(createElement).toHaveBeenCalledTimes(1)
   })
 
-  it('includes reflected polar halos when the adjacent strip core is outside the viewport', () => {
-    const polarView = { ...view, height: 600, dec: 0 }
-    const { cache, context, copies } = createCache(polarView)
-    cache.draw(context, polarView)
-
-    const layout = getRasterLayout(polarView, 1)
-    expect(copies.filter(({ height }) => height > 0).every(({ y }) => y === -layout.gutter)).toBe(
-      true,
-    )
-    const reflectedEnds = [...new Set(copies.filter(({ height }) => height < 0).map(({ y }) => y))]
-    expect(reflectedEnds).toEqual([layout.gutter, layout.worldWidth + layout.gutter])
-  })
-
-  it('keeps tile spacing aligned while a cached image is scaled during zooming', () => {
+  it('scales one upright raster while zooming', () => {
     const { cache, context, copies } = createCache(view)
-    const zoomedView = { ...view, zoom: 1.5, height: 1400 }
-    cache.draw(context, zoomedView)
-
-    const layout = getRasterLayout(view, 1)
-    const starts = [...new Set(copies.map(({ y, height }) => Math.min(y, y + height)))].sort(
-      (a, b) => a - b,
-    )
-    expect(starts.length).toBeGreaterThan(1)
-    expect(starts[1]! - starts[0]!).toBeCloseTo((zoomedView.width * zoomedView.zoom) / 2)
-    for (const { width, height } of copies) {
-      expect(width).toBe(zoomedView.width * zoomedView.zoom)
-      expect(Math.abs(height)).toBe(layout.height * zoomedView.zoom)
+    cache.draw(context, { ...view, zoom: 1.5, height: 1400 })
+    expect(new Set(copies.map((copy) => copy.y)).size).toBe(1)
+    for (const copy of copies) {
+      expect(copy.width).toBe(view.width * 1.5)
+      expect(copy.height).toBe(getRasterLayout(view, 1).height * 1.5)
     }
   })
 
   it.each([-179, -95, -90, 0, 90, 95, 179])(
-    'aligns star images with independently folded celestial coordinates at chart latitude %s',
+    'aligns star images with physical celestial coordinates at chart latitude %s',
     (dec) => {
       const poleView = { ...view, dec, height: 1000 }
       const { cache, context, copies } = createCache(poleView)
@@ -189,17 +143,11 @@ describe('star raster continuation across the celestial poles', () => {
         .filter(({ x, y }) => x >= 0 && x < poleView.width && y >= 0 && y < poleView.height)
         .sort((a, b) => a.y - b.y)
       const expected: { x: number; y: number }[] = []
-      for (let revolution = -3; revolution <= 3; revolution += 1) {
-        for (const reflected of [false, true]) {
-          const latitude = (reflected ? 180 - star.dec : star.dec) + revolution * 360
-          const ra = star.ra + (reflected ? 12 : 0)
-          for (let wrap = -2; wrap <= 2; wrap += 1) {
-            const x = poleView.width / 2 - ((ra - poleView.ra + wrap * 24) / 24) * layout.worldWidth
-            const y = poleView.height / 2 + ((poleView.dec - latitude) / 360) * layout.worldWidth
-            if (x >= 0 && x < poleView.width && y >= 0 && y < poleView.height)
-              expected.push({ x, y })
-          }
-        }
+      for (let wrap = -2; wrap <= 2; wrap += 1) {
+        const x =
+          poleView.width / 2 - ((star.ra - poleView.ra + wrap * 24) / 24) * layout.worldWidth
+        const y = poleView.height / 2 + ((poleView.dec - star.dec) / 360) * layout.worldWidth
+        if (x >= 0 && x < poleView.width && y >= 0 && y < poleView.height) expected.push({ x, y })
       }
       expected.sort((a, b) => a.y - b.y)
       expect(actual).toHaveLength(expected.length)

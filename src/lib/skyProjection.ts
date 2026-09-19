@@ -5,8 +5,6 @@ export interface SkyPosition {
 }
 
 export interface SkyView extends SkyPosition {
-  /** The center uses extended chart latitude, not canonical physical declination. */
-  dec: number
   width: number
   height: number
   zoom: number
@@ -20,6 +18,18 @@ export interface ScreenPoint {
 export const MIN_ZOOM = 1
 export const MAX_ZOOM = 96
 const SCREEN_EDGE_EPSILON = 1e-7
+
+/** Keep the entire viewport between the two poles, including on portrait screens. */
+export function minimumSkyZoom(view: Pick<SkyView, 'width' | 'height'>): number {
+  return Math.max(MIN_ZOOM, (2 * view.height) / Math.max(1, view.width))
+}
+
+export function constrainSkyView(view: SkyView): void {
+  view.zoom = Math.max(minimumSkyZoom(view), Math.min(MAX_ZOOM, view.zoom))
+  const limit = Math.max(0, 90 - (180 * view.height) / (Math.max(1, view.width) * view.zoom))
+  view.dec = Math.max(-limit, Math.min(limit, view.dec))
+  view.ra = wrapRa(view.ra)
+}
 
 export function wrapRa(ra: number): number {
   return ((ra % 24) + 24) % 24
@@ -35,7 +45,7 @@ export function wrapLatitude(latitude: number): number {
 }
 
 export function latitudeDifference(latitude: number, center: number): number {
-  return wrapLatitude(latitude - center)
+  return latitude - center
 }
 
 /** Converts an extended chart position into physical equatorial coordinates. */
@@ -46,36 +56,29 @@ export function normalizeSkyPosition(position: SkyPosition): SkyPosition {
   return { ra: wrapRa(position.ra), dec: latitude }
 }
 
-/** Projects one chart image, without choosing between the two images of a physical position. */
+/** Projects the chart, repeating only right ascension horizontally. */
 export function projectChartPosition(position: SkyPosition, view: SkyView): ScreenPoint {
   const worldWidth = view.width * view.zoom
   return {
     x: view.width / 2 - (raDifference(position.ra, view.ra) / 24) * worldWidth,
-    y: view.height / 2 - (latitudeDifference(position.dec, view.dec) / 360) * worldWidth,
+    y: view.height / 2 - ((position.dec - view.dec) / 360) * worldWidth,
   }
 }
 
-/** Returns the physical image closest to the viewport center, suitable for local hit testing. */
 export function projectPosition(position: SkyPosition, view: SkyView): ScreenPoint {
-  const physical = normalizeSkyPosition(position)
-  const direct = projectChartPosition(physical, view)
-  if (Math.abs(physical.dec) === 90) return direct
-  const reflected = projectChartPosition({ ra: physical.ra + 12, dec: 180 - physical.dec }, view)
-  const distance = (point: ScreenPoint) =>
-    (point.x - view.width / 2) ** 2 + (point.y - view.height / 2) ** 2
-  return distance(direct) <= distance(reflected) ? direct : reflected
+  return projectChartPosition(position, view)
 }
 
 export function unprojectChartPoint(point: ScreenPoint, view: SkyView): SkyPosition {
   const worldWidth = view.width * view.zoom
   return {
     ra: wrapRa(view.ra - ((point.x - view.width / 2) / worldWidth) * 24),
-    dec: wrapLatitude(view.dec - ((point.y - view.height / 2) / worldWidth) * 360),
+    dec: view.dec - ((point.y - view.height / 2) / worldWidth) * 360,
   }
 }
 
 export function unprojectPoint(point: ScreenPoint, view: SkyView): SkyPosition {
-  return normalizeSkyPosition(unprojectChartPoint(point, view))
+  return unprojectChartPoint(point, view)
 }
 
 /** Fits a celestial figure using its smallest RA arc and its actual north–south extent. */
@@ -123,7 +126,7 @@ export function fitSkyPositions(
   }
 }
 
-/** Visits every wrapped image of a point that intersects the viewport, including tall viewports. */
+/** Visits horizontal copies only; the chart ends at its north and south poles. */
 export function forEachVisibleCopy(
   point: ScreenPoint,
   view: SkyView,
@@ -131,37 +134,22 @@ export function forEachVisibleCopy(
   padding = 0,
 ): void {
   const worldWidth = view.width * view.zoom
-  const worldHeight = worldWidth
   const edgePadding = padding + SCREEN_EDGE_EPSILON
+  if (point.y < -edgePadding || point.y > view.height + edgePadding) return
   const firstColumn = Math.ceil((-edgePadding - point.x) / worldWidth)
   const lastColumn = Math.floor((view.width + edgePadding - point.x) / worldWidth)
-  const firstRow = Math.ceil((-edgePadding - point.y) / worldHeight)
-  const lastRow = Math.floor((view.height + edgePadding - point.y) / worldHeight)
-
-  for (let row = firstRow; row <= lastRow; row += 1) {
-    for (let column = firstColumn; column <= lastColumn; column += 1) {
-      visitor({ x: point.x + column * worldWidth, y: point.y + row * worldHeight })
-    }
+  for (let column = firstColumn; column <= lastColumn; column += 1) {
+    visitor({ x: point.x + column * worldWidth, y: point.y })
   }
 }
 
-/** Visits both physical images, then their complete RA and meridian turns. */
 export function forEachProjectedPosition(
   position: SkyPosition,
   view: SkyView,
   visitor: (point: ScreenPoint) => void,
   padding = 0,
 ): void {
-  const physical = normalizeSkyPosition(position)
-  forEachVisibleCopy(projectChartPosition(physical, view), view, visitor, padding)
-  // RA has no physical meaning exactly at a pole; keep a single chosen meridian there.
-  if (Math.abs(physical.dec) === 90) return
-  forEachVisibleCopy(
-    projectChartPosition({ ra: physical.ra + 12, dec: 180 - physical.dec }, view),
-    view,
-    visitor,
-    padding,
-  )
+  forEachVisibleCopy(projectChartPosition(position, view), view, visitor, padding)
 }
 
 interface AngularRange {
@@ -171,39 +159,16 @@ interface AngularRange {
   maxDec: number
 }
 
-/** Intersects the chart viewport with its ordinary and reflected physical declination strips. */
+/** Intersects the viewport with the physical declination range. */
 function visibleAngularRanges(view: SkyView, padding: number): AngularRange[] {
   const worldWidth = view.width * view.zoom
   const halfRa = ((view.width / 2 + padding) / worldWidth) * 24
-  const halfLatitude = ((view.height / 2 + padding) / worldWidth) * 360
-  const latitude = wrapLatitude(view.dec)
-  const minLatitude = latitude - halfLatitude
-  const maxLatitude = latitude + halfLatitude
-  const ranges: AngularRange[] = []
-
-  for (const reflected of [false, true]) {
-    const centerRa = wrapRa(view.ra - (reflected ? 12 : 0))
-    const minRa = centerRa - halfRa
-    const maxRa = centerRa + halfRa
-    if (halfLatitude >= 180) {
-      ranges.push({ minRa, maxRa, minDec: -90, maxDec: 90 })
-      continue
-    }
-    const stripStart = reflected ? 90 : -90
-    const firstTurn = Math.ceil((minLatitude - stripStart - 180) / 360)
-    const lastTurn = Math.floor((maxLatitude - stripStart) / 360)
-    for (let turn = firstTurn; turn <= lastTurn; turn += 1) {
-      const offset = turn * 360
-      const minDec = reflected
-        ? Math.max(-90, 180 + offset - maxLatitude)
-        : Math.max(-90, minLatitude - offset)
-      const maxDec = reflected
-        ? Math.min(90, 180 + offset - minLatitude)
-        : Math.min(90, maxLatitude - offset)
-      if (minDec <= maxDec) ranges.push({ minRa, maxRa, minDec, maxDec })
-    }
-  }
-  return ranges
+  const halfDec = ((view.height / 2 + padding) / worldWidth) * 360
+  const minDec = Math.max(-90, view.dec - halfDec)
+  const maxDec = Math.min(90, view.dec + halfDec)
+  if (minDec > maxDec) return []
+  const ra = wrapRa(view.ra)
+  return [{ minRa: ra - halfRa, maxRa: ra + halfRa, minDec, maxDec }]
 }
 
 function positionIsVisible(position: SkyPosition, view: SkyView, padding = 0): boolean {
@@ -214,14 +179,10 @@ function positionIsVisible(position: SkyPosition, view: SkyView, padding = 0): b
     point.x <= view.width + edgePadding &&
     point.y >= -edgePadding &&
     point.y <= view.height + edgePadding
-  return (
-    inside(direct) ||
-    (Math.abs(position.dec) !== 90 &&
-      inside(projectChartPosition({ ra: position.ra + 12, dec: 180 - position.dec }, view)))
-  )
+  return inside(direct)
 }
 
-/** A fixed angular index; overlapping reflected strips visit each catalogue entry only once. */
+/** A fixed angular index that visits each catalogue entry only once. */
 export class SkyIndex<T extends SkyPosition> {
   private readonly columns = 96
   private readonly rows = 36

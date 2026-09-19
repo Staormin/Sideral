@@ -11,7 +11,6 @@ type SegmentVisitor = (
   end: ScreenPoint,
   pathIndex: number,
   segmentIndex: number,
-  reflected: boolean,
 ) => void
 
 function forEachProjectedSegment(
@@ -25,37 +24,28 @@ function forEachProjectedSegment(
       const previous = path[index - 1]
       const next = path[index]
       if (!previous || !next) continue
-      for (const reflected of [false, true]) {
-        const start = projectChartPosition(
-          {
-            ra: previous.ra + (reflected ? 12 : 0),
-            dec: reflected ? 180 - previous.dec : previous.dec,
-          },
-          view,
-        )
-        const dx = (-(next.ra - previous.ra) / 24) * worldWidth
-        const dy = ((next.dec - previous.dec) / 360) * worldWidth * (reflected ? 1 : -1)
-        const middle = { x: start.x + dx / 2, y: start.y + dy / 2 }
-        forEachVisibleCopy(
-          middle,
-          view,
-          (point) => {
-            visitor(
-              { x: point.x - dx / 2, y: point.y - dy / 2 },
-              { x: point.x + dx / 2, y: point.y + dy / 2 },
-              pathIndex,
-              index,
-              reflected,
-            )
-          },
-          Math.max(Math.abs(dx), Math.abs(dy)) / 2,
-        )
-      }
+      const start = projectChartPosition(previous, view)
+      const dx = (-(next.ra - previous.ra) / 24) * worldWidth
+      const dy = (-(next.dec - previous.dec) / 360) * worldWidth
+      const middle = { x: start.x + dx / 2, y: start.y + dy / 2 }
+      forEachVisibleCopy(
+        middle,
+        view,
+        (point) => {
+          visitor(
+            { x: point.x - dx / 2, y: point.y - dy / 2 },
+            { x: point.x + dx / 2, y: point.y + dy / 2 },
+            pathIndex,
+            index,
+          )
+        },
+        Math.max(Math.abs(dx), Math.abs(dy)) / 2,
+      )
     }
   }
 }
 
-/** Traces separate celestial runs with unwrapped RA, including their reflected chart images. */
+/** Traces separate celestial runs with unwrapped RA, including their horizontal chart copies. */
 export function traceSkyPaths(
   ctx: CanvasRenderingContext2D,
   paths: readonly (readonly SkyPosition[])[],
@@ -85,8 +75,8 @@ export function projectSkyPaths(
 ): string[] {
   const runs: ProjectedRun[] = []
   const groups = new Map<number, RunGroup>()
-  forEachProjectedSegment(paths, view, (start, end, pathIndex, segmentIndex, reflected) => {
-    const groupKey = pathIndex * 2 + Number(reflected)
+  forEachProjectedSegment(paths, view, (start, end, pathIndex, segmentIndex) => {
+    const groupKey = pathIndex
     let group = groups.get(groupKey)
     if (!group) {
       group = { segmentIndex, previous: [], current: [] }

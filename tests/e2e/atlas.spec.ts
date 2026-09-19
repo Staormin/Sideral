@@ -1,6 +1,7 @@
 import { expect, test, type Page } from '@playwright/test'
 
 type AtlasTestWindow = Window & {
+  __atlasView?: { ra: number; dec: number; zoom: number }
   __atlasVisibleStarCount?: number
   __VUE_DEVTOOLS_GLOBAL_HOOK__?: {
     enabled: boolean
@@ -17,7 +18,9 @@ test.beforeEach(async ({ page }) => {
       emit(event, ...payload) {
         const [, , name, args] = payload
         if (event !== 'component:emit' || name !== 'view-change' || !Array.isArray(args)) return
-        const view = args[0] as { visibleCount?: unknown } | undefined
+        const view = args[0] as
+          { ra: number; dec: number; zoom: number; visibleCount?: unknown } | undefined
+        if (view) observedWindow.__atlasView = view
         if (typeof view?.visibleCount === 'number')
           observedWindow.__atlasVisibleStarCount = view.visibleCount
       },
@@ -54,9 +57,10 @@ async function dragMap(page: Page, deltaX: number, deltaY: number): Promise<void
   )
 }
 
-test('full-sky panning reuses the star raster and preserves every catalogue entry', async ({
+test('wide-view panning reuses the star raster and preserves visible catalogue entries', async ({
   page,
 }) => {
+  await page.setViewportSize({ width: 1440, height: 600 })
   await page.goto('/')
   await expect(
     page.getByRole('combobox', { name: 'Rechercher une étoile ou une constellation', exact: true }),
@@ -64,7 +68,11 @@ test('full-sky panning reuses the star raster and preserves every catalogue entr
   const canvas = page.locator('canvas')
   await canvas.focus()
   for (let step = 0; step < 4; step += 1) await canvas.press('-')
-  await expect.poll(() => visibleStarCount(page)).toBe(119625)
+  await expect
+    .poll(() => page.evaluate(() => (window as AtlasTestWindow).__atlasView?.zoom))
+    .toBe(1)
+  await expect.poll(() => visibleStarCount(page)).toBeGreaterThan(100000)
+  const initialCount = await visibleStarCount(page)
   const before = await page.locator('.map-coordinates').textContent()
   const bounds = await canvas.boundingBox()
   if (!bounds) throw new Error('Canvas not laid out')
@@ -109,26 +117,24 @@ test('full-sky panning reuses the star raster and preserves every catalogue entr
   })
   await page.mouse.up()
   await expect(page.locator('.map-coordinates')).not.toHaveText(before ?? '')
-  await expect.poll(() => visibleStarCount(page)).toBe(119625)
+  await expect.poll(() => visibleStarCount(page)).toBe(initialCount)
   expect(operations.individualPoints).toBe(0)
   expect(operations.rasterCopies).toBeGreaterThan(0)
   expect(operations.rasterCopies).toBeLessThanOrEqual(8)
-  // HYG's Sirius coordinates must still align with the cached image after the 36 px pan.
+  // HYG's Sirius coordinates must still align with the cached image after the pan.
+  const center = await page.evaluate(() => (window as AtlasTestWindow).__atlasView!)
   await canvas.click({
     position: {
-      x: bounds.width / 2 - ((6.752481 - 6) / 24) * bounds.width - 36,
-      y: bounds.height / 2 + ((12 + 16.716116) / 360) * bounds.width,
+      x: bounds.width / 2 - ((6.752481 - center.ra) / 24) * bounds.width * center.zoom,
+      y: bounds.height / 2 + ((center.dec + 16.716116) / 360) * bounds.width * center.zoom,
     },
   })
   await expect(page.getByRole('heading', { name: 'Sirius', exact: true })).toBeVisible()
 })
 
 for (const rendering of ['raster', 'vector'] as const) {
-  test(`vertical dragging crosses poles correctly and preserves selection with ${rendering} rendering`, async ({
-    page,
-  }) => {
-    // A tall map displays several vertical copies while keeping the desktop search visible.
-    if (rendering === 'raster') await page.setViewportSize({ width: 800, height: 1000 })
+  test(`vertical view stays inside the chart with ${rendering} rendering`, async ({ page }) => {
+    await page.setViewportSize({ width: 800, height: 1000 })
     await page.goto('/')
     await expect(
       page.getByRole('combobox', {
@@ -137,61 +143,58 @@ for (const rendering of ['raster', 'vector'] as const) {
       }),
     ).toBeEnabled({ timeout: 30_000 })
     const canvas = page.locator('canvas')
+    const readView = () => page.evaluate(() => (window as AtlasTestWindow).__atlasView!)
+    async function expectCovered() {
+      await expect
+        .poll(async () => {
+          const center = await readView()
+          const bounds = await canvas.boundingBox()
+          if (!center || !bounds) return false
+          const halfHeight = (180 * bounds.height) / (bounds.width * center.zoom)
+          return center.dec + halfHeight <= 90 + 1e-7 && center.dec - halfHeight >= -90 - 1e-7
+        })
+        .toBe(true)
+    }
     await canvas.focus()
-    for (let step = 0; step < 5; step += 1) await canvas.press('-')
-    await expect.poll(() => visibleStarCount(page)).toBe(119625)
-    // Three keyboard zoom steps from minimum cross the raster/vector threshold.
-    const zoomSteps = rendering === 'vector' ? 3 : 0
-    for (let step = 0; step < zoomSteps; step += 1) await canvas.press('=')
-    await canvas.evaluate(
-      () =>
-        new Promise<void>((resolve) =>
-          requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
-        ),
-    )
-    if (rendering === 'vector') {
-      await expect.poll(() => visibleStarCount(page)).toBeLessThan(119625)
-    }
-    const initialCount = await visibleStarCount(page)
-    const coordinates = page.locator('.map-coordinates')
-    await expect(coordinates).toContainText('+12°')
-    const initialCoordinates = (await coordinates.textContent()) ?? ''
-    const bounds = await canvas.boundingBox()
-    if (!bounds) throw new Error('Canvas not laid out')
-    const zoom = 1.5 ** zoomSteps
-    const worldWidth = bounds.width * zoom
-    const verticalPeriod = worldWidth
-
+    for (let step = 0; step < 8; step++) await canvas.press('-')
+    await expectCovered()
+    await expect.poll(async () => (await readView()).dec).toBe(0)
+    const zoomSteps = rendering === 'vector' ? 3 : 1
+    for (let step = 0; step < zoomSteps; step++) await canvas.press('=')
     for (const direction of [1, -1]) {
-      // Complete a 360-degree meridian cycle, with the physical RA shift at each pole.
-      await dragMap(page, 0, -direction * verticalPeriod * 0.75)
-      await expect(coordinates).toContainText(direction === 1 ? '+78°' : '−78°')
-      await expect(coordinates).toContainText(direction === 1 ? '18h 00m' : '06h 00m')
-      await expect.poll(() => visibleStarCount(page)).toBeGreaterThan(0)
-      await dragMap(page, 0, -direction * verticalPeriod * 0.25)
-      await expect(coordinates).toHaveText(initialCoordinates)
-      await expect.poll(() => visibleStarCount(page)).toBe(initialCount)
+      await dragMap(page, 0, direction * 100000)
+      await expectCovered()
+      const boundary = await readView()
+      await dragMap(page, 0, direction * 100000)
+      await canvas.press(direction === 1 ? 'ArrowUp' : 'ArrowDown')
+      expect((await readView()).dec).toBeCloseTo(boundary.dec)
+      await dragMap(page, 0, -direction * 30)
+      expect((await readView()).dec).not.toBe(boundary.dec)
+      await expectCovered()
     }
-
-    const sirius = {
-      x: bounds.width / 2 - ((6.752481 - 6) / 24) * worldWidth,
-      y: bounds.height / 2 + ((12 + 16.716116) / 360) * worldWidth,
-    }
-    if (rendering === 'raster') {
-      // The image beyond the north pole is reflected and offset by 12h in RA.
-      sirius.x = (sirius.x + worldWidth / 2) % worldWidth
-      sirius.y = bounds.height / 2 + ((12 - 180 - 16.716116) / 360) * worldWidth
-      expect(sirius.y).toBeGreaterThan(35)
-      expect(sirius.y).toBeLessThan(bounds.height - 35)
-    }
-    await canvas.click({ position: sirius })
+    await canvas.hover({ position: { x: 100, y: 30 } })
+    await page.mouse.wheel(0, 3000)
+    await expectCovered()
+    await page.setViewportSize({ width: 390, height: 844 })
+    await expectCovered()
+    await page.setViewportSize({ width: 844, height: 390 })
+    await expectCovered()
+    await page.setViewportSize({ width: 1440, height: 1000 })
+    await canvas.press('Home')
+    await expectCovered()
+    const center = await readView()
+    const bounds = (await canvas.boundingBox())!
+    await canvas.click({
+      position: {
+        x: bounds.width / 2 - ((6.752481 - center.ra) / 24) * bounds.width * center.zoom,
+        y: bounds.height / 2 + ((center.dec + 16.716116) / 360) * bounds.width * center.zoom,
+      },
+    })
     await expect(page.getByRole('heading', { name: 'Sirius', exact: true })).toBeVisible()
   })
 }
 
-test('high-zoom grid keeps half-minute labels exact on both sides of the north pole', async ({
-  page,
-}) => {
+test('high-zoom grid keeps half-minute labels exact at the north boundary', async ({ page }) => {
   await page.goto('/')
   await expect(
     page.getByRole('combobox', {
@@ -249,9 +252,9 @@ test('high-zoom grid keeps half-minute labels exact on both sides of the north p
   await page.mouse.up()
   expect(labels.ordinary).toContain('06h07m30s')
   expect(labels.ordinary).not.toContain('06h08')
-  expect(labels.polar).toContain('18h07m30s')
+  expect(labels.polar).not.toContain('18h07m30s')
   expect(labels.polar).toContain('06h07m30s')
-  await expect(page.locator('.map-coordinates')).toContainText('+89°')
+  await expect(page.locator('.map-coordinates')).not.toContainText('+90°')
 })
 
 test('search by catalogue identifier, inspect a real star, and select it on the map', async ({

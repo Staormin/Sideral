@@ -167,31 +167,14 @@ export class StarFieldCache {
     const { canvas, layout } = this
     if (!canvas || !layout) return
     const worldWidth = view.width * view.zoom
-    const worldHeight = worldWidth / 2
     const ratio = worldWidth / layout.worldWidth
     const rasterHeight = layout.height * ratio
     const offset = view.width / 2 - (1 - wrapRa(view.ra) / 24) * worldWidth
     const top = view.height / 2 + ((view.dec - 90) * worldWidth) / 360 - layout.gutter * ratio
-    // Beyond either pole, latitude reflects and right ascension advances by 12h.
-    // The two orientations repeat together after 360°, not after 180°.
-    for (const reflected of [false, true]) {
-      const stripOffset = offset - (reflected ? worldWidth / 2 : 0)
-      const firstX = stripOffset + Math.floor(-stripOffset / worldWidth) * worldWidth
-      const stripTop = top - (reflected ? worldHeight : 0)
-      // Include preceding strips whose polar halos still intersect the viewport.
-      const firstY =
-        stripTop + (Math.floor((-stripTop - rasterHeight) / worldWidth) + 1) * worldWidth
-      for (let y = firstY; y < view.height; y += worldWidth) {
-        if (reflected) {
-          ctx.save()
-          ctx.translate(0, y + rasterHeight)
-          ctx.scale(1, -1)
-        }
-        for (let x = firstX; x < view.width; x += worldWidth) {
-          ctx.drawImage(canvas, x, reflected ? 0 : y, worldWidth, rasterHeight)
-        }
-        if (reflected) ctx.restore()
-      }
+    if (top + rasterHeight <= 0 || top >= view.height) return
+    const firstX = offset + Math.floor(-offset / worldWidth) * worldWidth
+    for (let x = firstX; x < view.width; x += worldWidth) {
+      ctx.drawImage(canvas, x, top, worldWidth, rasterHeight)
     }
   }
 
